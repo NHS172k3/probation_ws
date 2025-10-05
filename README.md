@@ -1,192 +1,243 @@
-# Probation Task: Going Through Gate with Unity Simulation
+# Autonomous Underwater Gate Navigation System
 
-This repository contains the probation task, focusing on autonomous gate navigation using Unity simulation integrated with ROS 2.
+## Overview
 
-**You should NOT clone this repository from Mecatron github organization directly.** Instead, you should **fork** this repository to your own github and clone from it *(Please ask ChatGPT how to fork a github repository if you are unsure)*. After you fork and clone the repository, you should be on branch `probation/task`. If you are not on this branch, please switch to it using:
-```bash
-git checkout probation/task
+This project implements an autonomous underwater drone navigation system designed to locate, approach, and pass through underwater gates while avoiding obstacles. The solution uses computer vision for gate detection and a state machine approach for robust navigation control.
+
+## Problem Statement
+
+The challenge was to develop a navigation system that can:
+1. Search for and locate underwater gates
+2. Approach gates with proper alignment and aspect ratio correction
+3. Navigate through gates safely
+4. Avoid obstacles (flares, buoys, poles) during navigation
+5. Handle underwater-specific challenges like buoyancy and drag
+
+## Solution Architecture
+
+### Core Components
+
+1. **ROS2 Node Structure**: Built using `rclpy` with publishers/subscribers for:
+   - Velocity commands (`/mavros/setpoint_velocity/cmd_vel_unstamped`)
+   - Vision data (`/main_camera/detection/bounding_boxes`)
+   - Vehicle state (`/mavros/state`)
+
+2. **Computer Vision Integration**: Uses `vision_msgs/BoundingBoxArray` for object detection:
+   - Gate detection (label_id=3)
+   - Flare detection (label_id=1) 
+   - General obstacles (label_id=0,2,4,5)
+
+3. **State Machine Navigation**: 6-phase sequential approach for reliable navigation
+
+## Navigation Strategy
+
+### Phase-Based Approach
+
+#### **Phase 1: Search**
+- **Objective**: Locate the gate in the environment
+- **Method**: Slow rotation (`0.22 rad/s`) with periodic forward movement
+- **Logic**: Continue rotating until gate becomes visible
+- **Transition**: Move to Phase 2 when gate detected
+
+#### **Phase 2: Rough Centering** 
+- **Objective**: Initial coarse alignment with the gate
+- **Method**: High-gain proportional control for rapid correction
+- **Parameters**: 
+  - Strong gains (ROUGH_Z_GAIN=4.0, ROUGH_STRAFE_GAIN=2.0)
+  - No deadband for continuous correction
+  - Tolerance: ±0.05 for both X and Y axes
+- **Transition**: Move to Phase 3 when roughly centered
+
+#### **Phase 3: Approach**
+- **Objective**: Move closer to gate while maintaining vertical stability
+- **Method**: Forward movement with buoyancy compensation
+- **Features**:
+  - Vertical stabilization to counter buoyancy drift
+  - Target Y position offset (0.45 instead of 0.5) to compensate for upward drift
+  - Continue until gate reaches sufficient size (w/h > 0.6)
+- **Transition**: Move to Phase 4 when gate is large enough
+
+#### **Phase 4: Precise Centering**
+- **Objective**: Achieve precise gate alignment before aspect ratio correction
+- **Method**: High-precision proportional control
+- **Parameters**:
+  - Very high gains (z_gain=5.0, yaw_gain=3.0)
+  - Tight tolerance (±0.05 for positioning)
+  - Strong z-movement capability (clamp=0.8)
+- **Transition**: Move to Phase 5 when precisely centered
+
+#### **Phase 5: Aspect Ratio Correction**
+- **Objective**: Achieve optimal gate viewing angle for safe passage
+- **Method**: Orbital movement with adaptive direction control
+- **Key Features**:
+  - **Target Aspect Ratio**: 0.58 (optimized for gate passage)
+  - **Orbital Motion**: Lateral movement to change viewing angle
+  - **Adaptive Direction**: Reverses orbit direction if AR gets worse
+  - **Cycle Management**: Alternates between 3s orbit and 1s centering
+  - **Stuck Detection**: Forces go-through if minimal movement for 10+ seconds
+  - **No Timeout**: Continues until AR tolerance (±0.03) is achieved
+
+#### **Phase 6: Go Through**
+- **Objective**: Pass through the gate safely
+- **Method**: Direct forward movement at final speed (0.8 m/s)
+- **Safety**: Continues obstacle avoidance during passage
+
+### Underwater-Specific Adaptations
+
+#### **Buoyancy Compensation**
+- **Problem**: Positive buoyancy causes upward drift
+- **Solution**: 
+  - Offset target Y position to 0.45 (instead of 0.5)
+  - Continuous vertical stabilization during all phases
+  - Proportional control: `z_correction = -gain * (current_y - target_y)`
+
+#### **High-Gain Control System**
+- **Problem**: Water drag requires stronger control inputs
+- **Solution**:
+  - Dramatically increased gains (5x normal for Z-axis)
+  - Higher velocity clamps to overcome drag
+  - No deadband zones for continuous correction
+
+#### **Hybrid Control Approach**
+- **Horizontal Control**: Uses yaw (angular.z) for left/right movement
+- **Vertical Control**: Uses direct Z velocity (linear.z) for up/down
+- **Forward Control**: Uses X velocity (linear.x) for approach/retreat
+
+## Obstacle Avoidance System
+
+### Detection Strategy
+- **Trigger**: Any non-gate object with width OR height > 0.6
+- **Coverage**: Active during all navigation phases
+- **Types**: Flares, buoys, poles, and general obstacles
+
+### Avoidance Logic
+1. **Direction Selection**: Move to opposite side of screen from obstacle
+   - If obstacle at x < 0.5 (left side) → move right
+   - If obstacle at x > 0.5 (right side) → move left
+
+2. **Two-Phase Execution**:
+   - **Phase 1**: Strafe until obstacle is completely off-screen
+   - **Phase 2**: Brief forward movement (1.0s) to clear obstacle area
+
+3. **Light Touch Approach**:
+   - Reduced strafe speed (0.3 m/s) for gentle movement
+   - Minimal forward movement (0.2 m/s for 1.0s)
+   - Quick return to normal navigation
+
+## Advanced Features
+
+### **Aspect Ratio Correction Algorithm**
+```python
+# Core AR correction logic
+ar_error = current_ar - TARGET_AR
+strafe_y = orbit_gain * ar_error * direction_multiplier
+
+# Orbital movement principle:
+# If AR too low (gate too tall) → strafe LEFT to see gate from side
+# If AR too high (gate too wide) → strafe RIGHT for straight-on view
 ```
 
-You are supposed to implement your solution in this branch `probation/task` in either Python or C++. After you finish the task, please send us the link to your forked repository.
+### **Adaptive Direction Control**
+- Monitors AR improvement over 3-second cycles
+- Reverses orbit direction if AR gets worse by >0.02
+- Maintains direction if AR improves by >0.01
+- Provides robust correction even with noisy vision data
 
-## 1. Problem Statement
+### **Movement Monitoring**
+- Tracks gate position changes over time
+- Detects "stuck" conditions (movement < 0.02 for 10+ seconds)
+- Forces go-through to prevent infinite loops in AR correction
 
-**Task Goal**: Navigate an autonomous underwater vehicle (AUV) through a gate in a simulated environment.
+### **Gentle Backup System**
+- Activates when gate becomes too large (w/h > 0.85)
+- Performs conservative backward pulses until gate size reduces
+- Prevents collision with gate structure
 
-**Learning Objectives**:
-- Working with a simulation using ROS2
-- Process object detection data for meaningful insights
-- Develop autonomous decision-making and control algorithms
-- Manage a relatively large projects with many processes and nodes.
+## Technical Implementation
 
-**Success Criteria**:
-- The vehicle navigates autonomously through the gate 3 times, at 3 different random initial positions.
+### **Control Gains Tuning**
+```python
+# Rough centering (Phase 2)
+ROUGH_STRAFE_GAIN = 2.0    # Horizontal correction
+ROUGH_Z_GAIN = 4.0         # Vertical correction (4x for underwater)
 
-## 2. Setup and Dependencies
-
-### Workspace Structure
+# Precise control (Phase 4+)
+yaw_gain = 3.0             # Horizontal precision
+z_gain = 5.0               # Vertical precision (5x for drag)
 ```
-probation_ws/
-├── src/
-│   ├── ROS-TCP-Endpoint/          # Unity-ROS bridge
-│   └── vision/
-│       └── vision_msgs/           # Custom message definitions
+
+### **Target Parameters**
+```python
+TARGET_AR = 0.58           # Optimal aspect ratio for passage
+TARGET_X = 0.5             # Horizontal center
+TARGET_Y = 0.45            # Vertical center (offset for buoyancy)
 ```
 
-### Key Components
+### **Speed Configuration**
+```python
+SEARCH_YAW = 0.22          # Search rotation speed
+APPROACH_SPEED = 0.4       # Approach velocity
+FINAL_SPEED = 0.8          # Go-through velocity
+```
 
-- **[ROS-TCP-Endpoint](src/ROS-TCP-Endpoint)**: Bridge between Unity simulation and ROS 2
-- **[vision_msgs](src/vision/vision_msgs)**: Custom message types for bounding box data
-  - [`BoundingBox.msg`](src/vision/vision_msgs/msg/BoundingBox.msg): Single detection with bounding box information (x, y, w, h), confidence, label name and label id.
+## Key Innovations
 
-    ![Image of BoundingBox](docs/images/bounding_box_description.png)
+1. **Phase-Based State Machine**: Ensures systematic progression through navigation stages
+2. **Buoyancy-Aware Control**: Compensates for underwater vehicle dynamics
+3. **Adaptive AR Correction**: Self-correcting orbital motion for optimal gate alignment
+4. **Stuck Detection**: Prevents infinite loops in complex scenarios
+5. **Universal Obstacle Avoidance**: Works across all navigation phases
+6. **High-Gain Underwater Control**: Overcomes water drag and disturbances
 
-  - [`BoundingBoxArray.msg`](src/vision/vision_msgs/msg/BoundingBoxArray.msg): Array of detections with header
+## Quick Start Commands
 
 ### Prerequisites
+- ROS2 (Humble)
+- MAVROS for vehicle control
+- vision_msgs for object detection
+- Underwater vehicle with camera and detection system
 
-1. **ROS 2 Humble** - Full desktop installation
-2. **MAVROS** - For vehicle communication and control
-   ```bash
-   sudo apt install ros-$ROS_DISTRO-mavros
-   ```
-3. **Unity Simulation** - Provided simulation environment
-4. **Foxglove Bridge** - For monitoring various states of the vehicle
-   ```bash
-   sudo apt install ros-$ROS_DISTRO-foxglove-bridge
-   ```
-
-### Installation
-
-0. Fork the repository to your own github account.
-
-1. Clone and build the workspace:
-   ```bash
-   cd ~
-   git clone your_forked_repo_url
-   cd probation_ws
-   colcon build --symlink-install
-   source install/local_setup.bash
-   ```
-
-2. Additional setup:
-
-   To avoid repeatedly sourcing the workspace, you may run the following command to add source to `~/.bashrc` file:
-   ```bash
-   echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
-   echo "source ~/probation_ws/install/local_setup.bash" >> ~/.bashrc
-   ```
-
-If you are unsure about how to run your ROS2 implementation with Unity simulation, please refer to the [Appendix 5.2](#52-proper-setup-flow) for a proper setup flow.
-
-## 3. Things to Note About the Simulation
-
-### Simulation Characteristics
-
-- **Random Initial Position**: The vehicle spawns at a random location and orientation
-- **Imperfect Detection**: Objects are only detected approximately 70% of the time
-- **Flight Mode Requirement**: Vehicle must be in GUIDED mode for autonomous control via topics. To switch back to control by keyboard, set mode to `ALT_HOLD`.
-
-### Vision System
-
-- Bounding boxes are published from Unity simulation with message type [`vision_msgs/BoundingBoxArray`](src/vision/vision_msgs/msg/BoundingBoxArray.msg)
-- Coordinates are normalized (0.0-1.0) relative to image frame
-
-## 4. Suggested Logic Build-up
-
-To support your implementation, here is a suggested logic flow:
-
-1. Implement client to change vehicle to GUIDED mode
-2. Move down until reaching target depth for gate visibility
-3. Implement search pattern to locate gate
-4. Center the gate and moving forward to approach
-5. Go straight through the gate
-
-The logic flow above is one of many possible solutions. Feel free to explore and implement your own strategies.
-
-> **NOTE:**
-> The vehicle's initial position may sometimes face obstacles. If this occurs, please refer the [Appendix 5.1](#51-obstacle-avoidance-note) for more details.
-
-## 5. Appendix
-
-### 5.1. Obstacle Avoidance Note
-
-In the gate area of the simulation, there is a orange flare in front of the gate which acts as an obstacle. In this case, you may choose to implement obstacle avoidance logic if you wish, and of course it would be a bonus point. However, it is not a requirement for the probation task. 
-
-If you choose not to implement obstacle avoidance, you may reset the simulation if the vehicle's initial position faces an obstacle.
-
-> **NOTE:**  
-> We advise you to focus on the main task, which is to go through the gate without obstacle avoidance.  If there is time left, you may then implement obstacle avoidance logic.
-
-### 5.2. Proper Setup Flow
-
-To set up and run the simulation with ROS2 properly, follow these steps before starting your implementation:
-
-1. **Build Workspace**:
-   ```bash
-   cd probation_ws
-   colcon build
-   source install/setup.bash
-   ```
-
-2. **Start ROS TCP Endpoint**:
-   ```bash
-   ros2 run ros_tcp_endpoint default_server_endpoint
-   ```
-   The endpoint will start on `0.0.0.0:10000` by default.
-
-3. **Launch Unity Simulation**:
-   - Open the Unity simulation project. If you have not installed the simulation, please refer to our workshop notion page for the download link:
-        [Notion Page](https://mecatron.notion.site/ros2)
-   - Start the simulation
-
-4. **Verify Communication**:
-   ```bash
-   # Check available topics
-   ros2 topic list
-   
-   # Check MAVROS connection
-   ros2 topic echo /mavros/state
-   ```
-
-5. You may now start your ROS2 implementation to control the vehicle.
-
-### 5.3. Notes to Avoid Confusion
-#### Publishers
-
-In the workshop on Saturday, when working on the `minimal_publisher.py` file, we created a timer to call the timer_callback function every `0.5` seconds. The function publishes a `Float32` message with a value of `0.5` to the topic `/mavros/setpoint_velocity/cmd_vel_unstamped/x` at line 18, by:
-```python
-self.publisher_.publish(msg)
-```
-
-**Important Notes:**
-
-* In order to publish, you don't need to have a timer
-* You can call it anywhere: in a subscriber callback, service callback, or even in the class constructor (__init__).
-* The timer is just a convenient way to call a function periodically.
-
-### 5.4. Useful Reference
-
-#### Useful commands
+### Build and Run
 ```bash
-# Monitor system status
-ros2 topic echo /mavros/state
+# Terminal 1: Start ROS TCP endpoint (Unity-ROS bridge)
+ros2 run ros_tcp_endpoint default_server_endpoint
 
-# Check available topics, services
-ros2 topic list
-ros2 service list
+# Terminal 2: Build the workspace (if needed)
+cd /home/nhs172003/probation_ws
+colcon build --packages-select gate_navigator
 
-# Set vehicle mode
-ros2 service call /mavros/set_mode mavros_msgs/srv/SetMode "{base_mode: 0, custom_mode: 'GUIDED'}"
-
+# Terminal 3: Run the navigator
+ros2 run gate_navigator navigator
 ```
 
-#### Useful links
+### Configuration
+Key parameters can be adjusted in the navigator.py `__init__` method:
+- Navigation speeds and gains
+- Tolerance values for centering
+- Aspect ratio targets
+- Obstacle detection thresholds
 
-- [ROS2 Official Tutorials](https://docs.ros.org/en/humble/Tutorials.html)
+## Performance Characteristics
+
+- **Robustness**: Handles vision noise, vehicle drift, and environmental disturbances
+- **Efficiency**: Direct phase progression without unnecessary iterations
+- **Safety**: Comprehensive obstacle avoidance and collision prevention
+- **Adaptability**: Self-correcting algorithms for varying gate orientations
+- **Reliability**: Stuck detection and timeout mechanisms prevent system lock-up
+
+## Original Probation Task Information
+
+This solution was developed for the Mecatron probation task involving autonomous gate navigation using Unity simulation and ROS 2. The original task requirements included:
+
+- Navigate an autonomous underwater vehicle through a gate
+- Handle random initial positions and imperfect object detection
+- Demonstrate robust control algorithms and system integration
+- Achieve successful gate passage from 3 different starting positions
+
+For complete original documentation and setup instructions, refer to the git history or contact the development team.
 
 ---
 
-**Good luck with your probation task!** Focus on understanding the integration between simulation, vision processing, and vehicle control. The key is building a robust system that handles the imperfect nature of real-world sensing and control.
+*This navigation system represents a comprehensive solution to autonomous underwater gate navigation, combining robust control theory with practical underwater vehicle considerations.*
 
 
