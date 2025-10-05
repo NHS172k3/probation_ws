@@ -136,6 +136,8 @@ strafe_y = orbit_gain * ar_error * direction_multiplier
 # If AR too low (gate too tall) → strafe LEFT to see gate from side
 # If AR too high (gate too wide) → strafe RIGHT for straight-on view
 ```
+They key aspect here is that if you want to enter through the "flesh" of the gate and not bump into its sides, 
+you need the aspect ratio to be that amount(i measured it manually from the height and width while facing the gate
 
 ### **Adaptive Direction Control**
 - Monitors AR improvement over 3-second cycles
